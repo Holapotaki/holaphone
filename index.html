@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Holaphone</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css">
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js"></script>
+  <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"></script>
+  <script type="text/javascript" src="lib/SIPml.js"></script>
+  <script type="text/javascript">	
+var sipStack;
+var sessionRegister;
+var outboundSession;
+var inboundSession;
+var configCall;
+
+function loadSettings() {
+    if (window.localStorage) {
+
+        var s_value;
+        if ((s_value = window.localStorage.getItem('org.holaphone.websocket_server_url'))) {
+            txtWebSocketServerUrl.value = s_value;
+        }
+
+        if ((s_value = window.localStorage.getItem('org.holaphone.number_to_call'))) {
+            txtNumberToCall.value = s_value;
+        }
+    }
+}
+
+function saveSettings() {
+    if (window.localStorage) {
+        window.localStorage.setItem('org.holaphone.websocket_server_url', txtWebSocketServerUrl.value);
+        window.localStorage.setItem('org.holaphone.number_to_call', txtNumberToCall.value);
+    }
+}
+
+var readyCallback = function(e) {
+
+};
+
+var errorCallback = function(e) {
+    console.error('Failed to initialize the engine: ' + e.message);
+}
+
+function onStackEvent(e) {
+    switch (e.type) {
+
+        case 'stopping':
+        case 'stopped':
+        case 'failed_to_start':
+        case 'failed_to_stop': {
+            btnConnect.disabled = false;
+            btnDisconnect.disabled = true;
+            cardRegister.classList.remove('border-success');
+            txtRegisterStatus.innerHTML = (e.type == 'failed_to_start') || (e.type == 'failed_to_stop') ? e.description : 'Disconnected';
+            txtWebSocketServerUrl.disabled = false;
+
+            sessionRegister = null;
+            inboundSession = null;
+			outboundSession = null;
+            sipStack = null;
+            break;
+        }
+        case 'started': {
+            sessionRegister = sipStack.newSession('register', {
+                expires: 200,
+                events_listener: {
+                    events: '*',
+                    listener: onSessionEvent
+                } // optional: '*' means all events
+            });
+            sessionRegister.register();
+            break;
+        }
+        case 'i_new_call': {
+            if (outboundSession || inboundSession) {
+                // do not accept the incoming call if we're already 'in call'
+                e.newSession.hangup(); // comment this line for multi-line support
+            } else {
+                inboundSession = e.newSession;
+                // start listening for events
+                inboundSession.setConfiguration(configCall);
+
+                btnAcceptInboundCall.disabled = false;
+                btnHangUpInboundCall.disabled = false;
+ 
+                startRingTone();
+
+                var remoteNumber = (inboundSession.getRemoteFriendlyName() || 'unknown');
+                txtInboundCallStatus.innerHTML = "Inbound call from [" + remoteNumber + "]";
+            }
+            break;
+        }
+        case 'starting':
+        default:
+            break;
+    }
+}
+
+function onSessionEvent(e) {
+    switch (e.type) {
+        case 'connecting':
+        case 'connected': {
+            if (e.session == sessionRegister) {
+                txtRegisterStatus.innerHTML = 'Connected';
+                btnDisconnect.disabled = false;
+                cardRegister.classList.add('border-success');
+                btnOutboundCall.disabled = false;
+            } else if (e.session == outboundSession) {
+
+                btnOutboundCall.disabled = true;
+                btnHangUpOutboundCall.disabled = false;
+
+                if (e.type == 'connected') {
+                    stopRingbackTone();
+                    stopRingTone();
+                }
+
+                txtOutboundCallStatus.innerHTML = e.description;
+            } else if (e.session == inboundSession) {
+
+                if (e.type == 'connected') {
+                    stopRingbackTone();
+                    stopRingTone();
+                }
+
+                txtInboundCallStatus.innerHTML = e.description;
+            }
+
+            break;
+        }
+        case 'terminating':
+        case 'terminated': {
+            if (e.session == sessionRegister) {
+                sessionRegister = null;
+                outboundSession = null;
+                inboundSession = null;
+
+                txtRegisterStatus.innerHTML = e.description;
+                btnOutboundCall.disabled = true;
+            } else if (e.session == outboundSession) {
+
+                txtOutboundCallStatus.innerHTML = e.description;
+
+                btnOutboundCall.disabled = false;
+                btnHangUpOutboundCall.disabled = true;
+
+                outboundSession = null;
+
+                stopRingbackTone();
+                stopRingTone();
+
+                setTimeout(function() {
+                    if (!outboundSession) txtOutboundCallStatus.innerHTML = '';
+                }, 2500);
+            } else if (e.session == inboundSession) {
+
+                txtInboundCallStatus.innerHTML = e.description;
+
+                btnAcceptInboundCall.disabled = true;
+                btnHangUpInboundCall.disabled = true;
+
+                inboundSession = null;
+
+                stopRingbackTone();
+                stopRingTone();
+
+                setTimeout(function() {
+                    if (!inboundSession) txtInboundCallStatus.innerHTML = '';
+                }, 2500);
+            }
+            break;
+        }
+        case 'i_ao_request': {
+            if (e.session == outboundSession) {
+                var iSipResponseCode = e.getSipResponseCode();
+                if (iSipResponseCode == 180 || iSipResponseCode == 183) {
+                    startRingbackTone();
+                    txtOutboundCallStatus.innerHTML = 'Remote ringing...';
+                }
+            }
+            break;
+        }
+        case 'm_early_media': {
+            if (e.session == outboundSession) {
+                stopRingbackTone();
+                stopRingTone();
+                txtOutboundCallStatus.innerHTML = 'Early media started';
+            }
+            break;
+        }
+        case 'm_remote_hold': {
+            if (e.session == outboundSession) {
+                txtOutboundCallStatus.innerHTML = 'Placed on hold by remote party';
+            }
+            break;
+        }
+        case 'm_remote_resume': {
+            if (e.session == outboundSession) {
+                txtOutboundCallStatus.innerHTML = 'Taken off hold by remote party';
+            }
+            break;
+        }
+        case 'm_bfcp_info': {
+            if (e.session == outboundSession) {
+                txtOutboundCallStatus.innerHTML = 'BFCP Info: ' + e.description + '';
+            }
+            break;
+        }
+    }
+}
+
+function connect() {
+
+    if (!txtWebSocketServerUrl.value) {
+        txtRegisterStatus.innerHTML = 'Please fill the sip server address';
+        return;
+    }
+	else if (!validateIpAndPort(txtWebSocketServerUrl.value)) {
+        txtRegisterStatus.innerHTML = 'Please enter a valid sip server address';
+        return;
+    }
+
+    saveSettings();
+
+    btnConnect.disabled = true;
+    txtWebSocketServerUrl.disabled = true;
+
+    txtRegisterStatus.innerHTML = 'Connecting...';
+
+    try {
+
+        // create SIP stack
+        sipStack = new SIPml.Stack({
+            realm: 'asterisk.org',
+            impi: 'webrtc_client',
+            impu: 'sip:webrtc_client@' + getIp(txtWebSocketServerUrl.value),
+            password: 'webrtc_client',
+            display_name: 'webrtc_client',
+            //websocket_proxy_url: (window.localStorage ? window.localStorage.getItem('org.hola.websocket_server_url') : null),
+            websocket_proxy_url: 'wss://' + txtWebSocketServerUrl.value + '/ws',
+            outbound_proxy_url: null,
+            //ice_servers: (window.localStorage ? window.localStorage.getItem('org.doubango.expert.ice_servers') : null),
+            enable_rtcweb_breaker: false,
+            events_listener: {
+                events: '*',
+                listener: onStackEvent
+            },
+            enable_early_ims: true, // Must be true unless you're using a real IMS network
+            enable_media_stream_cache: true,
+            bandwidth: null, // could be redefined a session-level
+            video_size: null, // could be redefined a session-level
+            sip_headers: [{
+                    name: 'User-Agent',
+                    value: 'IM-client/OMA1.0 sipML5-v1.2016.03.04'
+                },
+                {
+                    name: 'Organization',
+                    value: 'Doubango Telecom'
+                }
+            ]
+        });
+        if (sipStack.start() != 0) {
+            txtRegisterStatus.innerHTML = 'Failed to start the SIP stack';
+            btnConnect.disabled = false;
+        }
+    } catch (e) {
+        txtRegisterStatus.innerHTML = e.description;
+        btnConnect.disabled = false;
+    }
+}
+
+function disconnect() {
+    if (sipStack) {
+        txtRegisterStatus.innerHTML = 'Disconnecting...';
+        sipStack.stop(); // shutdown all sessions
+    }
+}
+
+window.onload = function() {
+    SIPml.init(readyCallback, errorCallback);
+
+    // checks for WebSocket support
+    if (!SIPml.isWebSocketSupported() || !SIPml.isWebRtcSupported()) {
+        if (confirm('Your browser doesn\'t support WebRTC.\nAudio calls will be disabled.\nDo you want to download a WebRTC-capable browser?')) {
+            window.location = 'https://www.google.com/intl/en/chrome/browser/';
+        } else {
+            window.location = "index.html";
+        }
+        return;
+    }
+
+    loadSettings();
+
+    configCall = {
+        audio_remote: document.getElementById("audio_remote"),
+        video_local: undefined,
+        video_remote: undefined,
+        screencast_window_id: 0x00000000, // entire desktop
+        bandwidth: {
+            audio: undefined,
+            video: undefined
+        },
+        video_size: {
+            minWidth: undefined,
+            minHeight: undefined,
+            maxWidth: undefined,
+            maxHeight: undefined
+        },
+        events_listener: {
+            events: '*',
+            listener: onSessionEvent
+        },
+        sip_caps: [{
+                name: '+g.oma.sip-im'
+            },
+            {
+                name: 'language',
+                value: '\"en,fr\"'
+            }
+        ]
+    };
+}
+
+function makeOutboundCall() {
+    if (sipStack && !outboundSession) {
+        if (!txtNumberToCall.value) {
+            txtOutboundCallStatus.innerHTML = 'Please fill the phone number';
+            return;
+        } else if (!validatePhone(txtNumberToCall.value)) {
+		    txtOutboundCallStatus.innerHTML = 'Please enter a valid phone number';
+            return;
+		} else {
+            txtOutboundCallStatus.innerHTML = '';
+        }
+		
+        saveSettings();
+
+        btnOutboundCall.disabled = true;
+        btnHangUpOutboundCall.disabled = false;
+
+        // create call session
+        outboundSession = sipStack.newSession('call-audio', configCall);
+        // make call
+        if (outboundSession.call(txtNumberToCall.value) != 0) {
+            outboundSession = null;
+            txtOutboundCallStatus.value = 'Failed to make the call';
+            btnOutboundCall.disabled = false;
+            btnHangUpOutboundCall.disabled = true;
+            return;
+        }
+    }
+
+}
+
+function acceptInboundCall() {
+    if (inboundSession) {
+        txtInboundCallStatus.innerHTML = 'Connecting...';
+        inboundSession.accept(configCall);
+    }
+}
+
+function hangUpOutboundCall() {
+    if (outboundSession) {
+        txtOutboundCallStatus.innerHTML = 'Terminating the call...';
+        outboundSession.hangup({
+            events_listener: {
+                events: '*',
+                listener: onSessionEvent
+            }
+        });
+    }
+}
+
+function hangUpInboundCall() {
+    if (inboundSession) {
+        txtInboundCallStatus.innerHTML = 'Terminating the call...';
+        inboundSession.hangup({
+            events_listener: {
+                events: '*',
+                listener: onSessionEvent
+            }
+        });
+    }
+}
+
+function startRingTone() {
+    try {
+        ringtone.play();
+    } catch (e) {}
+}
+
+function stopRingTone() {
+    try {
+        ringtone.pause();
+    } catch (e) {}
+}
+
+function startRingbackTone() {
+    try {
+        ringbacktone.play();
+    } catch (e) {}
+}
+
+function stopRingbackTone() {
+    try {
+        ringbacktone.pause();
+    } catch (e) {}
+}
+
+function validateIpAndPort(input) {
+    var parts = input.split(":");
+    var ip = parts[0].split(".");
+    var port = parts[1];
+    return validateNum(port, 1, 65535) &&
+        ip.length == 4 &&
+        ip.every(function (segment) {
+            return validateNum(segment, 0, 255);
+        });
+}
+
+function validateNum(input, min, max) {
+    var num = +input;
+    return num >= min && num <= max && input === num.toString();
+}
+
+function validatePhone(input) {
+    var regex = /^\+(?:[0-9] ?){6,14}[0-9]$/;
+    return regex.test(input);
+}
+
+function getIp(input) {
+    var parts = input.split(":");
+    return parts[0];
+}		
+  </script>
+  <style>
+  .w-120 {
+    width:120px;
+  }
+  </style>
+</head>
+<body>
+
+    <div class="container-fluid">
+        <div class="row">
+            <div class="col">.col</div>
+            <div class="col-6">
+                <div class="card text-center" id="cardRegister">
+                    <div class="card-header">Asterisk SIP Server</div>
+                    <div class="card-body">
+                        <div class="input-group">
+                            <div class="input-group-prepend">
+                                <span class="input-group-text">wss://</span>
+                            </div>
+                            <input class="form-control" placeholder="" id="txtWebSocketServerUrl">
+                            <div class="input-group-append">
+                                <button type="button" class="btn btn-primary w-120" onclick="connect()" id="btnConnect">Connect</button>
+                                <button type="button" class="btn btn-secondary w-120" onclick="disconnect()" id="btnDisconnect" disabled>Disconnect</button>
+                            </div>
+                        </div>
+
+                    </div>
+                    <div class="card-footer text-muted" id="txtRegisterStatus">
+                        &nbsp;
+                    </div>
+                </div>
+            </div>
+            <div class="col">.col</div>
+        </div>
+        <div class="row">
+            <div class="col">.col</div>
+            <div class="col-6">
+                <div class="card text-center" id="cardOutgoingCall">
+                    <div class="card-header">Outbound Call</div>
+                    <div class="card-body">
+                        <div class="input-group">
+                            <input class="form-control text-center" placeholder="" id="txtNumberToCall">
+                            <div class="input-group-append">
+                                <button type="button" class="btn btn-success w-120" onclick="makeOutboundCall()" id="btnOutboundCall" disabled>Call</button>
+                                <button type="button" class="btn btn-secondary w-120" id="btnHangUpOutboundCall" onclick="hangUpOutboundCall()" disabled>Hang Up</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card-footer text-muted" id="txtOutboundCallStatus">
+                       &nbsp;
+                    </div>
+                </div>
+            </div>
+            <div class="col">.col</div>
+        </div>
+        <div class="row">
+            <div class="col">.col</div>
+            <div class="col-6">
+                <div class="card text-center" id="cardIincomingCall">
+                    <div class="card-header">Inbound Call</div>
+                    <div class="card-body">
+                        <div class="btn-group" role="group" aria-label="Basic example">
+                            <button type="button" class="btn btn-success w-120" id="btnAcceptInboundCall" onclick="acceptInboundCall()" disabled>Accept</button>
+                            <button type="button" class="btn btn-secondary w-120" id="btnHangUpInboundCall" onclick="hangUpInboundCall()" disabled>Hang Up</button>
+                        </div>
+                    </div>
+                    <div class="card-footer text-muted" id="txtInboundCallStatus">
+                        &nbsp;
+                    </div>
+                </div>
+            </div>
+            <div class="col">.col</div>
+        </div>
+    </div>
+
+    <audio id="audio_remote" autoplay="true"></audio>
+    <audio id="ringtone" loop src="sounds/ringtone.wav"> </audio>
+    <audio id="ringbacktone" loop src="sounds/ringbacktone.wav"> </audio>
+    <audio id="dtmfTone" src="sounds/dtmf.wav"> </audio>
+
+</body>
+</html>
