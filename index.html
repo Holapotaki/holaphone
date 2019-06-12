@@ -241,7 +241,7 @@ function connect() {
             password: 'webrtc_client',
             display_name: 'webrtc_client',
             //websocket_proxy_url: (window.localStorage ? window.localStorage.getItem('org.hola.websocket_server_url') : null),
-            websocket_proxy_url: 'wss://' + txtWebSocketServerUrl.value + '/ws',
+            websocket_proxy_url: 'ws://' + txtWebSocketServerUrl.value + '/ws',
             outbound_proxy_url: null,
             //ice_servers: (window.localStorage ? window.localStorage.getItem('org.doubango.expert.ice_servers') : null),
             enable_rtcweb_breaker: false,
@@ -454,7 +454,7 @@ function getIp(input) {
                     <div class="card-body">
                         <div class="input-group">
                             <div class="input-group-prepend">
-                                <span class="input-group-text">wss://</span>
+                                <span class="input-group-text">ws://</span>
                             </div>
                             <input class="form-control" placeholder="" id="txtWebSocketServerUrl">
                             <div class="input-group-append">
